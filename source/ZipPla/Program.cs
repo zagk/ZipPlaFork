@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
@@ -232,7 +232,7 @@ namespace ZipPla
                 }
                 else if (Directory.Exists(cmds[1]) || (MovieThumbnailLoader.Supports(cmds[1]) && (bool)(ffmpegExists = MovieThumbnailLoader.ffmpegExists())))
                 {
-                    startForm = new CatalogForm(cmds[1]);
+                    startForm = new CatalogForm(cmds[1], addToAddList: true);
                 }
                 /*
                 else if ((PackedImageLoader.Supports(cmds[1]) || ImageLoader.SupportsFullReading(cmds[1], ref ffmpegExists)) && File.Exists(cmds[1]))
@@ -246,13 +246,21 @@ namespace ZipPla
                 */
                 else if (File.Exists(cmds[1]))
                 {
-                    if (PackedImageLoader.Supports(cmds[1]) || ImageLoader.SupportsFullReading(cmds[1], ref ffmpegExists))
+                    // ZIP/RAR files opened from Explorer should always use the thumbnail
+                    // catalog browser rather than the single-image viewer.
+                    var extension = Path.GetExtension(cmds[1]);
+                    if (string.Equals(extension, ".zip", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(extension, ".rar", StringComparison.OrdinalIgnoreCase))
+                    {
+                        startForm = new CatalogForm(cmds[1], addToAddList: true);
+                    }
+                    else if (PackedImageLoader.Supports(cmds[1]) || ImageLoader.SupportsFullReading(cmds[1], ref ffmpegExists))
                     {
                         startForm = new ViewerForm(cmds[1], -1, null);
                     }
                     else
                     {
-                        startForm = new CatalogForm(cmds[1]);
+                        startForm = new CatalogForm(cmds[1], addToAddList: true);
                     }
                 }
                 else

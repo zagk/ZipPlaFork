@@ -1,4 +1,4 @@
-﻿using Alteridem.WinTouch;
+using Alteridem.WinTouch;
 using Common;
 using GenerarClasses;
 using SharpCompress.Common;
@@ -1263,7 +1263,7 @@ namespace ZipPla
             LoadSettings(null);
         }
 
-        public CatalogForm(string path, SortMode? sortMode = null, SortMode? preSortMode = null, string randomSeed = null)
+        public CatalogForm(string path, SortMode? sortMode = null, SortMode? preSortMode = null, string randomSeed = null, bool addToAddList = false)
         {
             Constructor();
             try
@@ -1273,6 +1273,7 @@ namespace ZipPla
                 if (IsSupportedByCatalogFormAndExists(path))
                 {
                     LoadSettings(path, sortModeOption: sortMode);
+                    if (addToAddList) AddExternalPathToAddList(path);
                     return;
                 }
                 //MessageBox.Show("1");
@@ -1282,6 +1283,7 @@ namespace ZipPla
                 {
                     //LoadSettings(path, sortModeOption: sortMode);
                     LoadSettings(Path.GetDirectoryName(path), getFileName(path), sortModeOption: sortMode);
+                    if (addToAddList) AddExternalPathToAddList(path);
                     return;
                 }
                 //MessageBox.Show("2");
@@ -1290,11 +1292,13 @@ namespace ZipPla
                 if (IsSupportedByCatalogFormAndExists(parent))
                 {
                     LoadSettings(parent, path.Substring(altPos + 1), sortMode);
+                    if (addToAddList) AddExternalPathToAddList(path);
                     return;
                 }
                 //MessageBox.Show("3");
 
                 LoadSettings(path, sortModeOption: sortMode);
+                if (addToAddList) AddExternalPathToAddList(path);
                 /*
             if (!path.EndsWith(Path.DirectorySeparatorChar.ToString()) && File.Exists(path) &&
                 !(MovieThumbnailLoader.Supports(path) && MovieThumbnailLoader.ffmpegExists()))
@@ -1311,6 +1315,42 @@ namespace ZipPla
                 LoadSettings(sortModeOption: sortMode, preSortModeOption: preSortMode, randomSeedOption: randomSeed);
             }
 
+        }
+
+        /// <summary>
+        /// Adds a path supplied by an external application (for example Windows Explorer's
+        /// context menu) to the left Add/bookmark list and persists the list.
+        /// </summary>
+        private void AddExternalPathToAddList(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return;
+
+            try
+            {
+                if (!(Directory.Exists(path) || File.Exists(path))) return;
+
+                path = Program.GetFullPath(path);
+
+                // Do not add the same location twice.
+                foreach (DataGridViewRow row in dgvDirectoryList.Rows)
+                {
+                    var bookmark = row.Cells[tbcDirectoryName.Index].Value as ColoredBookmark;
+                    var location = bookmark?.SimpleBookmark?.Location;
+                    if (!string.IsNullOrEmpty(location) &&
+                        string.Equals(Program.GetFullPath(location), path, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return;
+                    }
+                }
+
+                addCatalogBookmarkToList(currentConditionToColoredBookmark(currentProfileColor, path));
+                saveBookmarkToIni_bookmarkChanged = true;
+                saveBookmarkToConfig();
+            }
+            catch
+            {
+                // Opening the path must not fail just because the bookmark could not be saved.
+            }
         }
 
         private bool showStartHelpMessage = false;
@@ -1611,6 +1651,8 @@ namespace ZipPla
 #endif
             InitializeComponent();
 
+            // Add the context-menu registration toggle as the first item of Start.
+            InitializeContextMenuRegistrationItem();
 
 #if RUNTIME
             Program.RunTimeMeasure.Block("WaitPrepareTask");
@@ -19751,8 +19793,51 @@ namespace ZipPla
             AllowFullpower = true;
         }
 
+        private ToolStripMenuItem contextMenuRegistrationToolStripMenuItem;
+
+        private void InitializeContextMenuRegistrationItem()
+        {
+            contextMenuRegistrationToolStripMenuItem = new ToolStripMenuItem("Register context menu");
+            contextMenuRegistrationToolStripMenuItem.CheckOnClick = true;
+            contextMenuRegistrationToolStripMenuItem.Click += contextMenuRegistrationToolStripMenuItem_Click;
+
+            startToolStripMenuItem.DropDownItems.Insert(0, contextMenuRegistrationToolStripMenuItem);
+            UpdateContextMenuRegistrationMenuItem();
+        }
+
+        private void UpdateContextMenuRegistrationMenuItem()
+        {
+            if (contextMenuRegistrationToolStripMenuItem == null) return;
+
+            contextMenuRegistrationToolStripMenuItem.Checked =
+                ContextMenuRegistrationManager.IsRegistered;
+        }
+
+        private void contextMenuRegistrationToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                var registered = ContextMenuRegistrationManager.Toggle();
+                contextMenuRegistrationToolStripMenuItem.Checked = registered;
+            }
+            catch (Exception ex)
+            {
+                contextMenuRegistrationToolStripMenuItem.Checked =
+                    ContextMenuRegistrationManager.IsRegistered;
+
+                MessageBox.Show(
+                    this,
+                    "Could not change the Windows context menu registration.\r\n\r\n" + ex.Message,
+                    "ZipPla",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+        }
+
         private void startToolStripMenuItem_DropDownOpening(object sender, EventArgs e)
         {
+            UpdateContextMenuRegistrationMenuItem();
+
             try
             {
                 openHistoryToolStripMenuItem.Enabled = File.Exists(Program.HistorySorPath);

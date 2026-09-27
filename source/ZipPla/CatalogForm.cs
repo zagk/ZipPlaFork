@@ -1317,41 +1317,8 @@ namespace ZipPla
 
         }
 
-        /// <summary>
-        /// Adds a path supplied by an external application (for example Windows Explorer's
-        /// context menu) to the left Add/bookmark list and persists the list.
-        /// </summary>
-        private void AddExternalPathToAddList(string path)
-        {
-            if (string.IsNullOrWhiteSpace(path)) return;
-
-            try
-            {
-                if (!(Directory.Exists(path) || File.Exists(path))) return;
-
-                path = Program.GetFullPath(path);
-
-                // Do not add the same location twice.
-                foreach (DataGridViewRow row in dgvDirectoryList.Rows)
-                {
-                    var bookmark = row.Cells[tbcDirectoryName.Index].Value as ColoredBookmark;
-                    var location = bookmark?.SimpleBookmark?.Location;
-                    if (!string.IsNullOrEmpty(location) &&
-                        string.Equals(Program.GetFullPath(location), path, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return;
-                    }
-                }
-
-                addCatalogBookmarkToList(currentConditionToColoredBookmark(currentProfileColor, path));
-                saveBookmarkToIni_bookmarkChanged = true;
-                saveBookmarkToConfig();
-            }
-            catch
-            {
-                // Opening the path must not fail just because the bookmark could not be saved.
-            }
-        }
+        // d1: AddExternalPathToAddList / NormalizeBookmarkPath / RemoveDuplicateBookmarksByLocation /
+        //     OpenExternalPath 는 CatalogForm.ExternalOpen.cs 로 옮겼다.
 
         private bool showStartHelpMessage = false;
         private bool showStartHelpMessageOfDirectoryList = false;
@@ -1651,8 +1618,12 @@ namespace ZipPla
 #endif
             InitializeComponent();
 
+            // Fork version in the window title (ZipPla v18.1, v18.2, ...).
+            try { Text = Program.DisplayName; } catch { }
             // Add the context-menu registration toggle as the first item of Start.
             InitializeContextMenuRegistrationItem();
+            InitializeOnlyOneWindowMenuItem();
+            InitializeMetadataFeature();
 
 #if RUNTIME
             Program.RunTimeMeasure.Block("WaitPrepareTask");
@@ -3858,7 +3829,7 @@ namespace ZipPla
                 }
             }
 
-            Text = string.IsNullOrEmpty(currentLocation) ? Program.Name : $"{SimpleBookmark.GetDisplayName(currentLocation)} - {Program.Name}";
+            Text = string.IsNullOrEmpty(currentLocation) ? Program.DisplayName : $"{SimpleBookmark.GetDisplayName(currentLocation)} - {Program.DisplayName}";
 
 #if RUNTIME
             Program.RunTimeMeasure?.Block("ShowStatusBar");
@@ -5403,8 +5374,7 @@ namespace ZipPla
                     if (!(GPSizeThumbnail.TryGet(thumbnailCache, zipPath, tvCatalog.ThumbnailSize, currentClipMode == ClipMode.Letterbox, out img, out data) && ImageInfo.TryParseData(data, out imageInfo)))
                     {
                         if (img != null) img.Dispose();
-                        img = ImageLoader.GetFullBitmap(zipPath);
-                        imageInfo = ImageInfo.Supports(zipPath) ? new ImageInfo(zipPath) : ImageLoader.GetImageInfo(img);
+                        img = GetThumbnailSourceBitmap(zipPath, out imageInfo);
                         Bitmap img2;
                         if (GPSizeThumbnail.TrySet(thumbnailCache, zipPath, -1, tvCatalog.ThumbnailSize, currentClipMode == ClipMode.Letterbox,
                             !ImageLoader.IsLowLoad(zipPath), img, imageInfo.ToData(), out img2))
@@ -5418,7 +5388,9 @@ namespace ZipPla
                 }
                 else
                 {
-                    img = ImageLoader.GetAtLeastThumbnailBitmap(zipPath, tvCatalog.ThumbnailSize, true, out imageInfo);
+                    // d2: 캐시를 쓰지 않는 설정에서도 썸네일용 축소 디코딩을 우선 시도한다
+                    img = TryGetScaledThumbnailSource(zipPath, out imageInfo);
+                    if (img == null) img = ImageLoader.GetAtLeastThumbnailBitmap(zipPath, tvCatalog.ThumbnailSize, true, out imageInfo);
                 }
 
                 if (img != null)
@@ -5452,6 +5424,73 @@ namespace ZipPla
                 //}
                 return result;
             }
+        }
+
+        /// <summary>
+        /// 썸네일 원본이 될 비트맵을 만든다.
+        /// d2: 예전에는 항상 원본 전체(예: 56MP, 168MB)를 디코딩했다. 지금은 썸네일에
+        ///     필요한 밀도만 남기고 축소 디코딩하고, 그럴 수 없는 형식/크기일 때만
+        ///     기존의 전체 디코딩으로 넘어간다.
+        /// </summary>
+        private Bitmap GetThumbnailSourceBitmap(string zipPath, out ImageInfo imageInfo)
+        {
+            var scaled = TryGetScaledThumbnailSource(zipPath, out imageInfo);
+            if (scaled != null) return scaled;
+
+            var img = ImageLoader.GetFullBitmap(zipPath);
+            // m1: 작은 이미지라 축소 디코딩을 건너뛴 경우 헤더가 이미 파싱돼 있으면 재사용한다.
+            if (imageInfo == null)
+                imageInfo = ImageInfo.Supports(zipPath) ? new ImageInfo(zipPath) : ImageLoader.GetImageInfo(img);
+            return img;
+        }
+
+        /// <summary>
+        /// 축소 디코딩을 써도 되는지.
+        /// 기본 잘라내기 모드(PlaClip)는 소스에서 초점점을 찾아 그 주변을 잘라내는데, 그 초점점은
+        /// 128px 작업 이미지의 미세한 차이에도 민감해서 소스 크기를 바꾸면 잘라내는 위치가 달라진다.
+        /// (실측: 같은 그림을 560px 로 줄여 넣으면 표시 구간이 y 14%~65% → y 50%~100% 로 바뀌었다)
+        /// 그래서 초점점을 쓰지 않는 Letterbox / PanAndScan 에서만 축소 디코딩을 한다.
+        /// </summary>
+        private bool CanUseScaledThumbnailSource
+        {
+            get { return currentClipMode != ClipMode.PlaClip; }
+        }
+
+        /// <summary>축소 디코딩이 가능하고 이득이 있을 때만 비트맵을 돌려준다(아니면 null).</summary>
+        private Bitmap TryGetScaledThumbnailSource(string zipPath, out ImageInfo imageInfo)
+        {
+            imageInfo = null;
+            if (!CanUseScaledThumbnailSource) return null;
+            if (!ImageLoader.SupportsScaledThumbnailSource(zipPath)) return null;
+            try
+            {
+                var scaled = ImageLoader.GetScaledThumbnailSource(zipPath, tvCatalog.ThumbnailSize, out imageInfo);
+                if (scaled != null)
+                {
+                    if (imageInfo != null) return scaled;
+                    scaled.Dispose();
+                    imageInfo = null;
+                    return null;
+                }
+                // m1: null 이지만 imageInfo 가 살아 있으면 "작은 이미지, 헤더만 파싱됨".
+                //     폴백(GetThumbnailSourceBitmap)이 재사용하므로 여기서 지우지 않는다.
+                return null;
+            }
+            catch (Exception error)
+            {
+                // 축소 디코딩이 실패하면 기존 경로로 넘어간다(기존 경로도 실패하면 그대로 예외가 전달된다)
+                Program.LogException(error, "TryGetScaledThumbnailSource");
+                imageInfo = null;
+                return null;
+            }
+        }
+
+        /// <summary>d2: 썸네일 항목 읽기를 제한기 안에서 실행한다(ThumbnailLimiter.cs 참조).</summary>
+        internal Bitmap GetThumbnailForThumbViewerItem(string zipPath)
+        {
+            var isDir = Directory.Exists(zipPath);
+            MovieInfo movieInfo = null;
+            return GetThumbnail(zipPath, isDir, null, out _, out _, out _, out _, out _, ref movieInfo, existsHeader: false);
         }
 
         private Rectangle Round(RectangleF rect) { return new Rectangle((int)Math.Round(rect.X), (int)Math.Round(rect.Y), (int)Math.Round(rect.Width), (int)Math.Round(rect.Height)); }
@@ -6587,9 +6626,11 @@ namespace ZipPla
 
         private static void drawFileImage(Graphics g, Rectangle rect, Font font, Brush foreBrush, string text, string iconPath, DateTime lastWriteTime, Brush backBrush, bool isDir, bool isExist)
         {
-            //サムネイル読み込み処理を雑に書き換えたため、内部状態ではサムネイル読み込みが完了していないことになっている。
-            //サムネイルの上にファイルアイコンが重なって表示されてしまうため、ファイルアイコンそのものを描画しないように変更した。
-            return;
+            // d1: ここには以前 `return;` があり、ファイルアイコンの描画自体を無効化していた。
+            //     サムネイル読み込みを遅延読み込みに変えた結果、LoadResult が NotYet のままでも
+            //     サムネイルが表示される状態になり、読み込み済みサムネイルの上にファイルアイコンが
+            //     重なってしまったための暫定処置だった。
+            //     呼び出し側がサムネイルの有無で分岐するようになったので描画を復帰させている。
             try
             {
                 //var icon = iconPath != null ? FileTypeManager.GetLargeIconBitmap(iconPath, useFileAttrinutes: !isExist) : null;
@@ -8774,7 +8815,7 @@ namespace ZipPla
                     //bmwMakePreview.RunWorkerAsyncWithInterrupt(ZipPathArrayDup, false);
                     bmwMakePreview.RunWorkerAsyncWithInterrupt(new object[2 * initialZipPathLength], false);
 
-                    Text = $"{SimpleBookmark.GetDisplayName(dirPath)} - {Program.Name}";
+                    Text = $"{SimpleBookmark.GetDisplayName(dirPath)} - {Program.DisplayName}";
                 }));
             }
             catch (ObjectDisposedException) { }
@@ -9665,6 +9706,7 @@ namespace ZipPla
             }
 
             selectionSynchronizingFromThumbnailToFileList();
+            RefreshMetadataPanel();
         }
 
         private void selectionSynchronizingFromThumbnailToFileList(bool changeScroll = true)
@@ -9982,6 +10024,9 @@ namespace ZipPla
                 config.FileListVisible = fileListToolStripMenuItem.Checked;
                 config.FileListDock = getFileListDock();
                 config.FileListWidth = pnlRight_NormalWidth;
+                config.MetadataVisible = metadataToolStripMenuItem != null && metadataToolStripMenuItem.Checked;
+                config.MetadataDock = getMetadataDock();
+                config.MetadataWidth = pnlMetadata_NormalWidth;
                 config.FileListOrder = Program.EncodeDisplayIndices(dgvFileList.Columns);
                 config.IconInFileList = tbcIcon.Visible;
                 config.PageInFileList = tbcPage.Visible;
@@ -10120,6 +10165,9 @@ namespace ZipPla
             SubfolderMode subfolderMode;
             DockStyle fileListDock;
             int fileListWidth;
+            bool metadataVisible;
+            DockStyle metadataDock;
+            int metadataWidth;
             string[] fileListOrder;
             int ratingReference;
             KeyAndValue<string, string>[] alias;
@@ -10212,6 +10260,9 @@ namespace ZipPla
                 fileList = config.FileListVisible;
                 fileListDock = config.FileListDock;
                 fileListWidth = config.FileListWidth;
+                metadataVisible = config.MetadataVisible;
+                metadataDock = config.MetadataDock;
+                metadataWidth = config.MetadataWidth;
                 fileListOrder = config.FileListOrder;
                 iconInFileList = config.IconInFileList;
                 pageInFileList = config.PageInFileList;
@@ -10674,6 +10725,8 @@ namespace ZipPla
                 Shown -= shown;
             });
             Shown += shown;
+
+            ApplyMetadataPanelSettings(metadataVisible, metadataDock, metadataWidth);
 
             return LoadSettings_Result.Completed;
         }
@@ -19797,7 +19850,7 @@ namespace ZipPla
 
         private void InitializeContextMenuRegistrationItem()
         {
-            contextMenuRegistrationToolStripMenuItem = new ToolStripMenuItem("Register context menu");
+            contextMenuRegistrationToolStripMenuItem = new ToolStripMenuItem(Message.ContextMenuRegistration ?? "Register context menu");
             contextMenuRegistrationToolStripMenuItem.CheckOnClick = true;
             contextMenuRegistrationToolStripMenuItem.Click += contextMenuRegistrationToolStripMenuItem_Click;
 
@@ -19827,16 +19880,367 @@ namespace ZipPla
 
                 MessageBox.Show(
                     this,
-                    "Could not change the Windows context menu registration.\r\n\r\n" + ex.Message,
+                    (Message.ContextMenuRegistrationFailed ?? "Could not change the Windows context menu registration.") + "\r\n\r\n" + ex.Message,
                     "ZipPla",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
             }
         }
 
+        private ToolStripMenuItem singleWindowToolStripMenuItem;
+
+        private void InitializeOnlyOneWindowMenuItem()
+        {
+            singleWindowToolStripMenuItem = new ToolStripMenuItem(Message.OnlyOneWindow ?? "Only one window");
+            singleWindowToolStripMenuItem.CheckOnClick = true;
+            singleWindowToolStripMenuItem.Click += singleWindowToolStripMenuItem_Click;
+
+            var insertAt = contextMenuRegistrationToolStripMenuItem != null
+                ? startToolStripMenuItem.DropDownItems.IndexOf(contextMenuRegistrationToolStripMenuItem) + 1
+                : 0;
+            startToolStripMenuItem.DropDownItems.Insert(insertAt, singleWindowToolStripMenuItem);
+            UpdateSingleWindowMenuItem();
+        }
+
+        private void UpdateSingleWindowMenuItem()
+        {
+            if (singleWindowToolStripMenuItem == null) return;
+            singleWindowToolStripMenuItem.Checked = SingleInstanceManager.Enabled;
+        }
+
+        private void singleWindowToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            var enabled = singleWindowToolStripMenuItem.Checked;
+            SingleInstanceManager.Enabled = enabled;
+            if (enabled)
+            {
+                if (!SingleInstanceManager.TryBecomePrimaryAndStartServer())
+                {
+                    // 이미 다른 창이 수신자다. 이 창은 수신자가 될 수 없으므로 기록만 남긴다.
+                    Program.LogMessage("Another window already owns single window mode; this window will not receive forwarded paths.");
+                }
+            }
+            else
+            {
+                SingleInstanceManager.Stop();
+            }
+            UpdateSingleWindowMenuItem();
+        }
+
+        // ==================== Metadata panel (Behavior > Metadata) ====================
+        //
+        // Metadata uses the same visual frame concept as the existing Details pane:
+        // the resize grip is a child of the docked frame itself.  This is intentional.
+        // Having a second Splitter as a sibling of splRight makes WinForms docking/z-order
+        // ambiguous when Details and Metadata are both visible, which can make the divider
+        // disappear.  Keeping the grip inside pnlMetadata makes the divider part of the
+        // frame, so it remains visible and draggable for every docking direction.
+
+        private Panel pnlMetadata;
+        private Panel splMetadata; // resize grip; kept under this name for compatibility
+        private MetadataPanel metadataPanelControl;
+        private int pnlMetadata_NormalWidth = -1;
+        private int pnlMetadata_NormalHeight = -1;
+        private bool metadataSplitterDragging;
+        private Point metadataSplitterDragStart;
+        private int metadataSplitterStartSize;
+        private DockStyle metadataDockStyle = DockStyle.Right;
+
+        private ToolStripMenuItem metadataToolStripMenuItem;
+        private ToolStripMenuItem metadataVerticalToolStripMenuItem;
+        private ToolStripMenuItem metadataAlternativeVerticalToolStripMenuItem;
+        private ToolStripMenuItem metadataHorizontalToolStripMenuItem;
+        private ToolStripMenuItem metadataAlternativeHorizontalToolStripMenuItem;
+
+        private void InitializeMetadataFeature()
+        {
+            metadataPanelControl = new MetadataPanel { Dock = DockStyle.Fill };
+
+            pnlMetadata = new Panel
+            {
+                Dock = DockStyle.Right,
+                Visible = false,
+                Width = 300,
+            };
+
+            // The divider belongs to the Metadata frame itself, exactly like a frame edge.
+            // It is never a sibling of splRight, so it cannot be hidden by Dock/z-order rules.
+            splMetadata = new Panel
+            {
+                Width = 8,
+                Height = 8,
+                BackColor = SystemColors.ControlLight,
+                Visible = true,
+                Cursor = Cursors.VSplit,
+                TabStop = false,
+            };
+
+            pnlMetadata.Controls.Add(metadataPanelControl);
+            pnlMetadata.Controls.Add(splMetadata);
+            pnlMetadata.Controls.SetChildIndex(splMetadata, 0);
+            pnlMetadata.Controls.SetChildIndex(metadataPanelControl, 1);
+            pnlMetadata.SizeChanged += pnlMetadata_SizeChanged;
+
+            splMetadata.MouseEnter += splMetadata_MouseEnter;
+            splMetadata.MouseLeave += splMetadata_MouseLeave;
+            splMetadata.MouseDown += splMetadata_MouseDown;
+            splMetadata.MouseMove += splMetadata_MouseMove;
+            splMetadata.MouseUp += splMetadata_MouseUp;
+
+            pnlAntiLeft.Controls.Add(pnlMetadata);
+            ArrangeMetadataControls();
+
+            pnlMetadata_NormalWidth = pnlMetadata.Width;
+            pnlMetadata_NormalHeight = 200;
+
+            // Behavior > Metadata
+            metadataToolStripMenuItem = new ToolStripMenuItem(Message.Metadata) { CheckOnClick = true };
+            metadataToolStripMenuItem.CheckedChanged += metadataToolStripMenuItem_CheckedChanged;
+            var fileListIndex = viewToolStripMenuItem.DropDownItems.IndexOf(fileListToolStripMenuItem);
+            viewToolStripMenuItem.DropDownItems.Insert(fileListIndex + 1, metadataToolStripMenuItem);
+
+            // Behavior > Layout
+            // Keep all eight layout choices directly under Layout: four existing Details
+            // layouts followed by four Metadata layouts. Metadata is intentionally not a
+            // nested submenu; this makes the layout menu a single, flat 8-option list.
+            metadataVerticalToolStripMenuItem = new ToolStripMenuItem(Message.MetadataVerticalLayout) { CheckOnClick = true };
+            metadataAlternativeVerticalToolStripMenuItem = new ToolStripMenuItem(Message.MetadataAlternativeVerticalLayout) { CheckOnClick = true };
+            metadataHorizontalToolStripMenuItem = new ToolStripMenuItem(Message.MetadataHorizontalLayout) { CheckOnClick = true };
+            metadataAlternativeHorizontalToolStripMenuItem = new ToolStripMenuItem(Message.MetadataAlternativeHorizontalLayout) { CheckOnClick = true };
+
+            metadataVerticalToolStripMenuItem.Click += (s, e) => setMetadataDock(DockStyle.Bottom);
+            metadataAlternativeVerticalToolStripMenuItem.Click += (s, e) => setMetadataDock(DockStyle.Top);
+            metadataHorizontalToolStripMenuItem.Click += (s, e) => setMetadataDock(DockStyle.Right);
+            metadataAlternativeHorizontalToolStripMenuItem.Click += (s, e) => setMetadataDock(DockStyle.Left);
+
+            layoutToolStripMenuItem.DropDownItems.Add(new ToolStripSeparator());
+            layoutToolStripMenuItem.DropDownItems.Add(metadataVerticalToolStripMenuItem);
+            layoutToolStripMenuItem.DropDownItems.Add(metadataAlternativeVerticalToolStripMenuItem);
+            layoutToolStripMenuItem.DropDownItems.Add(metadataHorizontalToolStripMenuItem);
+            layoutToolStripMenuItem.DropDownItems.Add(metadataAlternativeHorizontalToolStripMenuItem);
+            updateMetadataDockCheckMarks(getMetadataDock());
+        }
+
+        private void ArrangeMetadataControls()
+        {
+            if (pnlAntiLeft == null || pnlMetadata == null || splMetadata == null) return;
+
+            // The grip is always on the inner edge of the Metadata frame.
+            switch (metadataDockStyle)
+            {
+                case DockStyle.Left:
+                    splMetadata.Dock = DockStyle.Right;
+                    splMetadata.Cursor = Cursors.VSplit;
+                    break;
+                case DockStyle.Right:
+                    splMetadata.Dock = DockStyle.Left;
+                    splMetadata.Cursor = Cursors.VSplit;
+                    break;
+                case DockStyle.Top:
+                    splMetadata.Dock = DockStyle.Bottom;
+                    splMetadata.Cursor = Cursors.HSplit;
+                    break;
+                case DockStyle.Bottom:
+                    splMetadata.Dock = DockStyle.Top;
+                    splMetadata.Cursor = Cursors.HSplit;
+                    break;
+            }
+            splMetadata.Visible = true;
+            pnlMetadata.PerformLayout();
+            pnlAntiLeft.PerformLayout();
+        }
+
+        private void splMetadata_MouseEnter(object sender, EventArgs e)
+        {
+            GeneralMouseEnter(splMetadata);
+        }
+
+        private void splMetadata_MouseLeave(object sender, EventArgs e)
+        {
+            if (!metadataSplitterDragging) GeneralMouseLeave(splMetadata);
+        }
+
+        private void splMetadata_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left || pnlMetadata == null || !pnlMetadata.Visible) return;
+            metadataSplitterDragging = true;
+            metadataSplitterDragStart = Control.MousePosition;
+            var dock = getMetadataDock();
+            metadataSplitterStartSize = (dock == DockStyle.Left || dock == DockStyle.Right)
+                ? pnlMetadata.Width : pnlMetadata.Height;
+            splMetadata.Capture = true;
+        }
+
+        private void splMetadata_MouseMove(object sender, MouseEventArgs e)
+        {
+            if (!metadataSplitterDragging || pnlMetadata == null || pnlAntiLeft == null) return;
+
+            var now = Control.MousePosition;
+            var dx = now.X - metadataSplitterDragStart.X;
+            var dy = now.Y - metadataSplitterDragStart.Y;
+            var dock = getMetadataDock();
+            int newSize;
+
+            switch (dock)
+            {
+                case DockStyle.Left:
+                    newSize = metadataSplitterStartSize + dx;
+                    break;
+                case DockStyle.Right:
+                    newSize = metadataSplitterStartSize - dx;
+                    break;
+                case DockStyle.Top:
+                    newSize = metadataSplitterStartSize + dy;
+                    break;
+                case DockStyle.Bottom:
+                    newSize = metadataSplitterStartSize - dy;
+                    break;
+                default:
+                    return;
+            }
+
+            var vertical = dock == DockStyle.Left || dock == DockStyle.Right;
+            var minMetadata = 70;
+            var minCenter = CenterPanellMinWidth > 0 ? CenterPanellMinWidth : 100;
+
+            // Calculate the maximum from the actual remaining Thumbnail area.  This also
+            // automatically accounts for the Details frame when both panes are visible.
+            var currentCenterSize = vertical ? pnlCenter.Width : pnlCenter.Height;
+            var maxSize = Math.Max(minMetadata, metadataSplitterStartSize + Math.Max(0, currentCenterSize - minCenter));
+            newSize = Math.Max(minMetadata, Math.Min(maxSize, newSize));
+
+            if (vertical) pnlMetadata.Width = newSize;
+            else pnlMetadata.Height = newSize;
+            if (vertical) pnlMetadata_NormalWidth = newSize;
+            else pnlMetadata_NormalHeight = newSize;
+
+            pnlAntiLeft.PerformLayout();
+            if (pnlCenter != null) pnlCenter.PerformLayout();
+            if (tvCatalog != null)
+            {
+                tvCatalog.PerformLayout();
+                tvCatalog.Invalidate();
+            }
+        }
+
+        private void splMetadata_MouseUp(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left || !metadataSplitterDragging) return;
+            metadataSplitterDragging = false;
+            splMetadata.Capture = false;
+            pnlAntiLeft.PerformLayout();
+            if (pnlCenter != null) pnlCenter.PerformLayout();
+            if (tvCatalog != null) tvCatalog.Invalidate();
+        }
+
+        private void pnlMetadata_SizeChanged(object sender, EventArgs e)
+        {
+            if (!pnlMetadata.Visible) return;
+            var dock = getMetadataDock();
+            var vertical = dock == DockStyle.Left || dock == DockStyle.Right;
+            if (vertical) pnlMetadata_NormalWidth = pnlMetadata.Width;
+            else pnlMetadata_NormalHeight = pnlMetadata.Height;
+        }
+
+        private DockStyle getMetadataDock()
+        {
+            return metadataDockStyle;
+        }
+
+        private void setMetadataDock(DockStyle dockStyle)
+        {
+            if (pnlMetadata == null || splMetadata == null) return;
+            if (dockStyle != DockStyle.Left && dockStyle != DockStyle.Right &&
+                dockStyle != DockStyle.Top && dockStyle != DockStyle.Bottom) return;
+
+            var oldDock = getMetadataDock();
+            var currentVertical = oldDock == DockStyle.Left || oldDock == DockStyle.Right;
+            var nextVertical = dockStyle == DockStyle.Left || dockStyle == DockStyle.Right;
+            var currentSize = currentVertical ? pnlMetadata.Width : pnlMetadata.Height;
+
+            metadataDockStyle = dockStyle;
+            pnlMetadata.Dock = dockStyle;
+
+            if (currentVertical == nextVertical)
+            {
+                if (nextVertical) pnlMetadata.Width = currentSize;
+                else pnlMetadata.Height = currentSize;
+            }
+            else
+            {
+                if (nextVertical)
+                    pnlMetadata.Width = pnlMetadata_NormalWidth > 0 ? pnlMetadata_NormalWidth : 300;
+                else
+                    pnlMetadata.Height = pnlMetadata_NormalHeight > 0 ? pnlMetadata_NormalHeight : 200;
+            }
+
+            ArrangeMetadataControls();
+            updateMetadataDockCheckMarks(dockStyle);
+        }
+
+        private void updateMetadataDockCheckMarks(DockStyle dockStyle)
+        {
+            if (metadataVerticalToolStripMenuItem == null) return;
+            metadataVerticalToolStripMenuItem.Checked = dockStyle == DockStyle.Bottom;
+            metadataAlternativeVerticalToolStripMenuItem.Checked = dockStyle == DockStyle.Top;
+            metadataHorizontalToolStripMenuItem.Checked = dockStyle == DockStyle.Right;
+            metadataAlternativeHorizontalToolStripMenuItem.Checked = dockStyle == DockStyle.Left;
+        }
+
+        private void metadataToolStripMenuItem_CheckedChanged(object sender, EventArgs e)
+        {
+            var ckd = metadataToolStripMenuItem.Checked;
+            pnlMetadata.Visible = ckd;
+            // The grip is a child of pnlMetadata; it must stay visible whenever the frame is visible.
+            splMetadata.Visible = true;
+            if (ckd)
+            {
+                ArrangeMetadataControls();
+                RefreshMetadataPanel();
+            }
+            pnlAntiLeft.PerformLayout();
+        }
+
+        private void ApplyMetadataPanelSettings(bool visible, DockStyle dock, int width)
+        {
+            if (pnlMetadata == null) return;
+
+            setMetadataDock(dock);
+            if (width > 0)
+            {
+                var vertical = dock == DockStyle.Left || dock == DockStyle.Right;
+                if (vertical) { pnlMetadata.Width = width; pnlMetadata_NormalWidth = width; }
+                else { pnlMetadata.Height = width; pnlMetadata_NormalHeight = width; }
+            }
+            metadataToolStripMenuItem.Checked = visible;
+        }
+
+        /// <summary>
+        /// Refreshes the Metadata panel to show the currently selected item, if the panel is
+        /// visible. Cheap no-op otherwise. Called from tvCatalog_SelectedIndexChanged.
+        /// </summary>
+        private void RefreshMetadataPanel()
+        {
+            if (metadataPanelControl == null || !metadataToolStripMenuItem.Checked) return;
+
+            string path = null;
+            try
+            {
+                var selectedIndex = tvCatalog.SelectedIndex;
+                if (selectedIndex >= 0 && ZipPathArray != null && ZipPathArray.Length > selectedIndex)
+                {
+                    path = ZipPathArray[selectedIndex];
+                }
+            }
+            catch { }
+
+            metadataPanelControl.SetPath(path);
+        }
+
         private void startToolStripMenuItem_DropDownOpening(object sender, EventArgs e)
         {
             UpdateContextMenuRegistrationMenuItem();
+            UpdateSingleWindowMenuItem();
 
             try
             {
@@ -24836,7 +25240,21 @@ namespace ZipPla
                             thumbRect.Height -= dh;
                         }
                     }
-                    if (cond == LoadResult.FileNotFound || cond == LoadResult.LoadError || cond == LoadResult.NotYet)
+                    // d1: 遅延読み込みでは LoadResult が NotYet のままでもビューアーには画像が入っている。
+                    //     実際に画像を持っているかどうかで分岐しないと、サムネイルの上にファイルアイコンを
+                    //     重ねて描画してしまう（以前はそれを drawFileImage ごと無効化して回避していた）。
+                    var hasThumbnail = false;
+                    try
+                    {
+                        var thumbItem = e.DataIndex >= 0 && e.DataIndex < sender.Count ? sender[e.DataIndex] : null;
+                        hasThumbnail = thumbItem != null && thumbItem.Image != null;
+                    }
+                    catch (Exception ex)
+                    {
+                        Program.LogException(ex, "tvCatalog_ThumbnailPaint (thumbnail state)");
+                    }
+
+                    if (!hasThumbnail && (cond == LoadResult.FileNotFound || cond == LoadResult.LoadError || cond == LoadResult.NotYet))
                     {
                         var str = showFilenameToolStripMenuItem.Checked ? null : name;
                         var iconPath = !IsVirtualPath ? path : null;
@@ -29799,6 +30217,9 @@ namespace ZipPla
         public bool FileListVisible = true;
         public DockStyle FileListDock = DockStyle.Bottom;
         public int FileListWidth = -1;
+        public bool MetadataVisible = false;
+        public DockStyle MetadataDock = DockStyle.Right;
+        public int MetadataWidth = -1;
         public string[] FileListOrder = new string[0];
         public bool IconInFileList = true;
         public bool PageInFileList = false;
@@ -30315,7 +30736,9 @@ namespace ZipPla
 
     public class ThumbViewerItem : IDisposable
     {
-        static readonly SemaphoreSlim semaphore = new SemaphoreSlim(1, 1);
+        // d2: 예전에는 static SemaphoreSlim(1, 1) 로 모든 창의 모든 항목이 한 번에 하나씩만
+        //     디코딩됐다(그래서 ThreadCount 설정이 무의미했다). 이제는 메모리 예산을 기준으로
+        //     여러 장을 동시에 읽는다. ThumbnailLimiter.cs 참조.
         public CatalogForm OwnerCatalog { get; set; }
         private ThumbViewer owner = null;
         public ThumbViewer Owner { get { return owner; } }
@@ -30365,24 +30788,39 @@ namespace ZipPla
         public async Task LoadAsync()
         {
             var path = FilePath;
-            if (path == null || OwnerCatalog == null || source != null || Image != null) 
+            if (path == null || OwnerCatalog == null || source != null || Image != null || OwnerCatalog.IsDisposed)
                 return;
-            source = new CancellationTokenSource();
-            MovieInfo info = null;
-            await semaphore.WaitAsync();
+            var current = new CancellationTokenSource();
+            source = current;
+            IDisposable lease = null;
             try
             {
-                if (source.IsCancellationRequested)
+                lease = await ThumbnailLimiter.AcquireAsync(path, current.Token);
+                if (current.IsCancellationRequested)
                     return;
-                Image = await Task.Run(() => OwnerCatalog.GetThumbnail(path, Directory.Exists(path), null, out _, out _, out _, out _, out _, ref info, false));
-                if (FilePath != path)
-                    Image = null;
+
+                var thumbnail = await Task.Run(() => OwnerCatalog.GetThumbnailForThumbViewerItem(path));
+                if (current.IsCancellationRequested || FilePath != path)
+                {
+                    thumbnail?.Dispose();
+                    return;
+                }
+                Image = thumbnail;
+            }
+            catch (OperationCanceledException)
+            {
+                // m1: 스크롤로 화면 밖으로 나간 항목은 큐 대기 중에 조용히 취소된다. 로그 남기지 않음.
+            }
+            catch (Exception error)
+            {
+                // 画像が壊れている等の場合は GetThumbnail 側で処理されるので、ここは想定外の異常のみ
+                Program.LogException(error, "ThumbViewerItem.LoadAsync");
             }
             finally
             {
-                source.Dispose();
-                source = null;
-                semaphore.Release();
+                if (lease != null) lease.Dispose();
+                current.Dispose();
+                if (source == current) source = null;
             }
         }
 

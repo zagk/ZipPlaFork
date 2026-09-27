@@ -1,0 +1,451 @@
+diff -ru '--exclude=bin' '--exclude=obj' /tmp/d1orig/ZipPlaFork-v16-d1/source/ZipPla/CatalogForm.cs /c/Users/zagk/Desktop/buff/ZipPlaFork-v16-d2/source/ZipPla/CatalogForm.cs
+--- /tmp/d1orig/ZipPlaFork-v16-d1/source/ZipPla/CatalogForm.cs	2026-09-23 19:38:48.000000000 +0900
++++ /c/Users/zagk/Desktop/buff/ZipPlaFork-v16-d2/source/ZipPla/CatalogForm.cs	2026-09-23 20:30:17.867434300 +0900
+@@ -5372,8 +5372,7 @@
+                     if (!(GPSizeThumbnail.TryGet(thumbnailCache, zipPath, tvCatalog.ThumbnailSize, currentClipMode == ClipMode.Letterbox, out img, out data) && ImageInfo.TryParseData(data, out imageInfo)))
+                     {
+                         if (img != null) img.Dispose();
+-                        img = ImageLoader.GetFullBitmap(zipPath);
+-                        imageInfo = ImageInfo.Supports(zipPath) ? new ImageInfo(zipPath) : ImageLoader.GetImageInfo(img);
++                        img = GetThumbnailSourceBitmap(zipPath, out imageInfo);
+                         Bitmap img2;
+                         if (GPSizeThumbnail.TrySet(thumbnailCache, zipPath, -1, tvCatalog.ThumbnailSize, currentClipMode == ClipMode.Letterbox,
+                             !ImageLoader.IsLowLoad(zipPath), img, imageInfo.ToData(), out img2))
+@@ -5387,7 +5386,9 @@
+                 }
+                 else
+                 {
+-                    img = ImageLoader.GetAtLeastThumbnailBitmap(zipPath, tvCatalog.ThumbnailSize, true, out imageInfo);
++                    // d2: 캐시를 쓰지 않는 설정에서도 썸네일용 축소 디코딩을 우선 시도한다
++                    img = TryGetScaledThumbnailSource(zipPath, out imageInfo);
++                    if (img == null) img = ImageLoader.GetAtLeastThumbnailBitmap(zipPath, tvCatalog.ThumbnailSize, true, out imageInfo);
+                 }
+ 
+                 if (img != null)
+@@ -5423,6 +5424,65 @@
+             }
+         }
+ 
++        /// <summary>
++        /// 썸네일 원본이 될 비트맵을 만든다.
++        /// d2: 예전에는 항상 원본 전체(예: 56MP, 168MB)를 디코딩했다. 지금은 썸네일에
++        ///     필요한 밀도만 남기고 축소 디코딩하고, 그럴 수 없는 형식/크기일 때만
++        ///     기존의 전체 디코딩으로 넘어간다.
++        /// </summary>
++        private Bitmap GetThumbnailSourceBitmap(string zipPath, out ImageInfo imageInfo)
++        {
++            var scaled = TryGetScaledThumbnailSource(zipPath, out imageInfo);
++            if (scaled != null) return scaled;
++
++            var img = ImageLoader.GetFullBitmap(zipPath);
++            imageInfo = ImageInfo.Supports(zipPath) ? new ImageInfo(zipPath) : ImageLoader.GetImageInfo(img);
++            return img;
++        }
++
++        /// <summary>
++        /// 축소 디코딩을 써도 되는지.
++        /// 기본 잘라내기 모드(PlaClip)는 소스에서 초점점을 찾아 그 주변을 잘라내는데, 그 초점점은
++        /// 128px 작업 이미지의 미세한 차이에도 민감해서 소스 크기를 바꾸면 잘라내는 위치가 달라진다.
++        /// (실측: 같은 그림을 560px 로 줄여 넣으면 표시 구간이 y 14%~65% → y 50%~100% 로 바뀌었다)
++        /// 그래서 초점점을 쓰지 않는 Letterbox / PanAndScan 에서만 축소 디코딩을 한다.
++        /// </summary>
++        private bool CanUseScaledThumbnailSource
++        {
++            get { return currentClipMode != ClipMode.PlaClip; }
++        }
++
++        /// <summary>축소 디코딩이 가능하고 이득이 있을 때만 비트맵을 돌려준다(아니면 null).</summary>
++        private Bitmap TryGetScaledThumbnailSource(string zipPath, out ImageInfo imageInfo)
++        {
++            imageInfo = null;
++            if (!CanUseScaledThumbnailSource) return null;
++            if (!ImageLoader.SupportsScaledThumbnailSource(zipPath)) return null;
++            try
++            {
++                var scaled = ImageLoader.GetScaledThumbnailSource(zipPath, tvCatalog.ThumbnailSize, out imageInfo);
++                if (scaled != null && imageInfo != null) return scaled;
++                if (scaled != null) scaled.Dispose();
++                imageInfo = null;
++                return null;
++            }
++            catch (Exception error)
++            {
++                // 축소 디코딩이 실패하면 기존 경로로 넘어간다(기존 경로도 실패하면 그대로 예외가 전달된다)
++                Program.LogException(error, "TryGetScaledThumbnailSource");
++                imageInfo = null;
++                return null;
++            }
++        }
++
++        /// <summary>d2: 썸네일 항목 읽기를 제한기 안에서 실행한다(ThumbnailLimiter.cs 참조).</summary>
++        internal Bitmap GetThumbnailForThumbViewerItem(string zipPath)
++        {
++            var isDir = Directory.Exists(zipPath);
++            MovieInfo movieInfo = null;
++            return GetThumbnail(zipPath, isDir, null, out _, out _, out _, out _, out _, ref movieInfo, existsHeader: false);
++        }
++
+         private Rectangle Round(RectangleF rect) { return new Rectangle((int)Math.Round(rect.X), (int)Math.Round(rect.Y), (int)Math.Round(rect.Width), (int)Math.Round(rect.Height)); }
+ 
+ 
+@@ -30666,7 +30726,9 @@
+ 
+     public class ThumbViewerItem : IDisposable
+     {
+-        static readonly SemaphoreSlim semaphore = new SemaphoreSlim(1, 1);
++        // d2: 예전에는 static SemaphoreSlim(1, 1) 로 모든 창의 모든 항목이 한 번에 하나씩만
++        //     디코딩됐다(그래서 ThreadCount 설정이 무의미했다). 이제는 메모리 예산을 기준으로
++        //     여러 장을 동시에 읽는다. ThumbnailLimiter.cs 참조.
+         public CatalogForm OwnerCatalog { get; set; }
+         private ThumbViewer owner = null;
+         public ThumbViewer Owner { get { return owner; } }
+@@ -30716,24 +30778,35 @@
+         public async Task LoadAsync()
+         {
+             var path = FilePath;
+-            if (path == null || OwnerCatalog == null || source != null || Image != null) 
++            if (path == null || OwnerCatalog == null || source != null || Image != null || OwnerCatalog.IsDisposed)
+                 return;
+-            source = new CancellationTokenSource();
+-            MovieInfo info = null;
+-            await semaphore.WaitAsync();
++            var current = new CancellationTokenSource();
++            source = current;
++            IDisposable lease = null;
+             try
+             {
+-                if (source.IsCancellationRequested)
++                lease = await ThumbnailLimiter.AcquireAsync(path);
++                if (current.IsCancellationRequested)
+                     return;
+-                Image = await Task.Run(() => OwnerCatalog.GetThumbnail(path, Directory.Exists(path), null, out _, out _, out _, out _, out _, ref info, false));
+-                if (FilePath != path)
+-                    Image = null;
++
++                var thumbnail = await Task.Run(() => OwnerCatalog.GetThumbnailForThumbViewerItem(path));
++                if (current.IsCancellationRequested || FilePath != path)
++                {
++                    thumbnail?.Dispose();
++                    return;
++                }
++                Image = thumbnail;
++            }
++            catch (Exception error)
++            {
++                // 画像が壊れている等の場合は GetThumbnail 側で処理されるので、ここは想定外の異常のみ
++                Program.LogException(error, "ThumbViewerItem.LoadAsync");
+             }
+             finally
+             {
+-                source.Dispose();
+-                source = null;
+-                semaphore.Release();
++                if (lease != null) lease.Dispose();
++                current.Dispose();
++                if (source == current) source = null;
+             }
+         }
+ 
+diff -ru '--exclude=bin' '--exclude=obj' /tmp/d1orig/ZipPlaFork-v16-d1/source/ZipPla/ImageLoader.cs /c/Users/zagk/Desktop/buff/ZipPlaFork-v16-d2/source/ZipPla/ImageLoader.cs
+--- /tmp/d1orig/ZipPlaFork-v16-d1/source/ZipPla/ImageLoader.cs	2026-09-23 19:38:48.000000000 +0900
++++ /c/Users/zagk/Desktop/buff/ZipPlaFork-v16-d2/source/ZipPla/ImageLoader.cs	2026-09-23 20:30:17.878967100 +0900
+@@ -11,6 +11,7 @@
+ using System.Text;
+ using System.Text.RegularExpressions;
+ using System.Windows.Forms;
++using System.Windows.Media.Imaging;
+ using System.Collections;
+ 
+ namespace ZipPla
+@@ -689,6 +690,120 @@
+             return GetFullBitmap(filePath, false, out var dummy, animation);
+         }
+ 
++        // d2: 썸네일을 만들기 위해 원본 전체(예: 56MP)를 디코딩하는 것은 낭비다.
++        //     WIC(WPF) 디코더는 JPEG 의 DCT 스케일링과 축소 디코딩을 지원하므로
++        //     필요한 밀도만 남기고 디코딩할 수 있다(측정: 6000x4000 JPEG 86ms → 25ms).
++        //
++        //     캐시(GPSizeThumbnail)에 저장되는 항목은 요청 크기의 SIZE_MARGIN(1.414) 배이고
++        //     TrySet 은 "원본 >= 축소 목표 * 2" 를 요구한다. 아래 SourceMargin 1.0 은 그보다
++        //     충분히 크므로 디코딩 크기를 줄여도 캐시 내용과 잘라내기 품질은 그대로다.
++        private const double ThumbnailSourceMargin = 3.5;
++
++        private static readonly string[] scaledThumbnailSourceExtensionsInLowerWithoutPeriod = new string[] { "jpg", "jpeg", "png", "bmp" };
++
++        /// <summary>
++        /// 원본을 통째로 읽지 않고 썸네일용으로 축소 디코딩할 수 있는 형식인지.
++        /// (IsLowLoad 인 형식과 일치시켜, 캐시가 원본 크기를 보관하지 않는 형식만 대상으로 한다)
++        /// </summary>
++        public static bool SupportsScaledThumbnailSource(string path)
++        {
++            if (path == null) return false;
++            try
++            {
++                var extension = Path.GetExtension(path);
++                if (extension.Length < 2) return false;
++                var withoutPeriod = extension.Substring(1).ToLower();
++                if (Array.IndexOf(scaledThumbnailSourceExtensionsInLowerWithoutPeriod, withoutPeriod) < 0) return false;
++                return ImageInfo.Supports(path);
++            }
++            catch
++            {
++                return false;
++            }
++        }
++
++        /// <summary>
++        /// 썸네일 생성용으로 축소 디코딩한 비트맵을 만든다.
++        /// 요청 크기의 ThumbnailSourceMargin 배보다 원본이 크지 않으면 null 을 돌려주고,
++        /// 호출자가 기존의 전체 디코딩 경로로 넘어간다(작은 이미지는 이득이 없고,
++        /// 캐시가 필요로 하는 크기 조건도 만족시키기 어렵다).
++        /// </summary>
++        public static Bitmap GetScaledThumbnailSource(string filePath, Size requestedThumbnailSize, out ImageInfo imageInfo)
++        {
++            imageInfo = null;
++            if (!SupportsScaledThumbnailSource(filePath)) return null;
++            if (requestedThumbnailSize.Width < 1 || requestedThumbnailSize.Height < 1) return null;
++
++            var info = new ImageInfo(filePath);
++            var sourceWidth = info.Size.Width;
++            var sourceHeight = info.Size.Height;
++            if (sourceWidth < 1 || sourceHeight < 1) return null;
++
++            var needWidth = requestedThumbnailSize.Width * ThumbnailSourceMargin;
++            var needHeight = requestedThumbnailSize.Height * ThumbnailSourceMargin;
++
++            // 두 축 모두 요청 크기의 margin 배 이상의 밀도를 남겨야 잘라내기 모드에서도 화질이 유지된다
++            var zoom = Math.Max(needWidth / sourceWidth, needHeight / sourceHeight);
++            if (zoom >= 1) return null;
++
++            var boundByWidth = needWidth / sourceWidth >= needHeight / sourceHeight;
++            var decodeWidth = (int)Math.Ceiling(sourceWidth * zoom);
++            var decodeHeight = (int)Math.Ceiling(sourceHeight * zoom);
++            if (decodeWidth < 1 || decodeHeight < 1) return null;
++
++            var isJpeg = IsJpegPath(filePath);
++            Bitmap result = null;
++            try
++            {
++                using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read))
++                {
++                    // 방향 정보는 축소 후에 적용한다(원본 크기에서 돌리는 것보다 훨씬 싸다)
++                    var orientation = new DihedralFraction();
++                    if (isJpeg)
++                    {
++                        orientation = GetJpegOrientation(stream);
++                        stream.Position = 0;
++                    }
++
++                    var image = new BitmapImage();
++                    image.BeginInit();
++                    image.CacheOption = BitmapCacheOption.OnLoad;
++                    image.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
++                    if (boundByWidth)
++                    {
++                        image.DecodePixelWidth = decodeWidth;
++                    }
++                    else
++                    {
++                        image.DecodePixelHeight = decodeHeight;
++                    }
++                    image.StreamSource = stream;
++                    image.EndInit();
++                    image.Freeze();
++
++                    result = BitmapResizer.GetBitmap(image);
++                    if (orientation != new DihedralFraction())
++                    {
++                        var rotated = ViewerFormImageFilter.Rotate(result, orientation);
++                        if (rotated != result) result.Dispose();
++                        result = rotated;
++                    }
++                }
++            }
++            catch
++            {
++                if (result != null)
++                {
++                    result.Dispose();
++                    result = null;
++                }
++                throw;
++            }
++
++            imageInfo = info;
++            return result;
++        }
++
+         //private static Bitmap getThumbnailBitmap(string filePath, bool setImageInfo, Size desiredSize, Func<Delegate, object> invoke, out ImageInfo imageInfo)
+         private static Bitmap GetThumbnailBitmap(string filePath, bool setImageInfo, Size desiredSize, out ImageInfo imageInfo)
+         {
+diff -ru '--exclude=bin' '--exclude=obj' /tmp/d1orig/ZipPlaFork-v16-d1/source/ZipPla/Program.cs /c/Users/zagk/Desktop/buff/ZipPlaFork-v16-d2/source/ZipPla/Program.cs
+--- /tmp/d1orig/ZipPlaFork-v16-d1/source/ZipPla/Program.cs	2026-09-23 19:38:48.000000000 +0900
++++ /c/Users/zagk/Desktop/buff/ZipPlaFork-v16-d2/source/ZipPla/Program.cs	2026-09-23 20:30:17.766711600 +0900
+@@ -188,6 +188,12 @@
+                 Environment.Exit(SelfTest.Run(rawCommands));
+                 return;
+             }
++            // d2: 썸네일 속도 계측용(진단 스위치)
++            if (ThumbnailBench.IsRequested(rawCommands))
++            {
++                Environment.Exit(ThumbnailBench.Run(rawCommands));
++                return;
++            }
+ 
+             // Optional single-window mode: forward subsequent catalog launches to the first instance.
+             // Built-in Viewer launches (-v / -LookAheadMode*) must remain separate processes.
+diff -ru '--exclude=bin' '--exclude=obj' /tmp/d1orig/ZipPlaFork-v16-d1/source/ZipPla/SelfTest.cs /c/Users/zagk/Desktop/buff/ZipPlaFork-v16-d2/source/ZipPla/SelfTest.cs
+--- /tmp/d1orig/ZipPlaFork-v16-d1/source/ZipPla/SelfTest.cs	2026-09-23 19:38:50.000000000 +0900
++++ /c/Users/zagk/Desktop/buff/ZipPlaFork-v16-d2/source/ZipPla/SelfTest.cs	2026-09-23 20:31:05.728395700 +0900
+@@ -15,6 +15,7 @@
+ using System.Linq;
+ using System.Runtime.InteropServices;
+ using System.Text;
++using System.Threading.Tasks;
+ 
+ namespace ZipPla
+ {
+@@ -49,6 +50,8 @@
+                 TestSingleInstancePayload();
+                 TestArchiveExtensionList();
+                 TestMessages();
++                TestThumbnailLimiter();
++                TestScaledThumbnailSource();
+             }
+             catch (Exception ex)
+             {
+@@ -298,6 +301,120 @@
+             CheckEqual("payload survives newline in path", withNewline[1], roundTrip.Length > 1 ? roundTrip[1] : null);
+         }
+ 
++        // d2: 썸네일 동시 실행 제한기. 메모리 기준으로 동시 작업 수를 제한하는 부분은
++        //     조용히 고장나면 "가끔 메모리 폭발" 로만 드러나므로 여기서 검증한다.
++        private static void TestThumbnailLimiter()
++        {
++            const long capacity = 100;
++            var throttle = new WeightedThrottle(capacity);
++
++            CheckEqual("throttle clamp over capacity", "100", throttle.Clamp(1000).ToString(CultureInfo.InvariantCulture));
++            CheckEqual("throttle clamp under one", "1", throttle.Clamp(0).ToString(CultureInfo.InvariantCulture));
++
++            // 예산을 넘지 않으면 즉시 통과한다
++            var first = throttle.AcquireAsync(60).GetAwaiter().GetResult();
++            CheckEqual("throttle used after first", "60", throttle.Used.ToString(CultureInfo.InvariantCulture));
++
++            var second = throttle.AcquireAsync(40).GetAwaiter().GetResult();
++            CheckEqual("throttle used after fill", "100", throttle.Used.ToString(CultureInfo.InvariantCulture));
++
++            // 넘치면 대기한다
++            var pending = throttle.AcquireAsync(10);
++            Check("throttle blocks over capacity", !pending.IsCompleted, "pending state " + pending.Status);
++            CheckEqual("throttle waiting count", "1", throttle.WaitingCount.ToString(CultureInfo.InvariantCulture));
++
++            // 하나를 놓으면 대기하던 작업이 들어온다
++            first.Dispose();
++            Check("throttle releases waiter", pending.Wait(5000), "waiter did not complete");
++            CheckEqual("throttle used after release", "50", throttle.Used.ToString(CultureInfo.InvariantCulture));
++            CheckEqual("throttle waiting count after release", "0", throttle.WaitingCount.ToString(CultureInfo.InvariantCulture));
++
++            // 리스를 두 번 놓아도 예산이 망가지지 않아야 한다
++            second.Dispose();
++            second.Dispose();
++            pending.GetAwaiter().GetResult().Dispose();
++            CheckEqual("throttle used after all released", "0", throttle.Used.ToString(CultureInfo.InvariantCulture));
++
++            // FIFO 순서를 지켜야 한다(새치기하면 큰 작업이 굶는다).
++            // 두 작업이 동시에 들어가지 못하는 크기로 만들어야 실행 순서가 확정된다.
++            // (둘 다 들어가면 완료 통지 순서가 스레드풀 사정에 따라 뒤바뀐다)
++            var order = new List<int>();
++            var orderLocker = new object();
++            var blocker = throttle.AcquireAsync(capacity).GetAwaiter().GetResult();
++            var big = throttle.AcquireAsync(80).ContinueWith(t => { lock (orderLocker) order.Add(1); t.Result.Dispose(); });
++            var small = throttle.AcquireAsync(30).ContinueWith(t => { lock (orderLocker) order.Add(2); t.Result.Dispose(); });
++            System.Threading.Thread.Sleep(200);
++            Check("throttle keeps both waiting", !big.IsCompleted && !small.IsCompleted && throttle.WaitingCount == 2,
++                "waiting " + throttle.WaitingCount);
++            blocker.Dispose();
++            Task.WaitAll(big, small);
++            CheckEqual("throttle fifo order", "1,2", string.Join(",", order));
++
++            Check("thumb limiter capacity positive", ThumbnailLimiter.TotalCapacity > 0);
++            Check("thumb limiter parallelism bounded", ThumbnailLimiter.MaxParallelism >= 2 && ThumbnailLimiter.MaxParallelism <= 16);
++
++            // 작은 작업들이라도 max parallelism 개를 넘길 수 없어야 한다
++            var floor = ThumbnailLimiter.WeighUnits(1);
++            var maxConcurrent = (int)(ThumbnailLimiter.TotalCapacity / floor);
++            Check("thumb limiter concurrency bounded", maxConcurrent <= ThumbnailLimiter.MaxParallelism,
++                "floor " + floor + " => " + maxConcurrent + " > " + ThumbnailLimiter.MaxParallelism);
++
++            // 큰 이미지 하나는 혼자서도 통과해야 한다(영원히 대기하지 않도록)
++            var huge = ThumbnailLimiter.AcquireAsync(long.MaxValue / 2);
++            Check("thumb limiter huge job proceeds", huge.Wait(5000), "huge job blocked");
++            huge.GetAwaiter().GetResult().Dispose();
++        }
++
++        private static void TestScaledThumbnailSource()
++        {
++            Check("scaled source rejects non image", !ImageLoader.SupportsScaledThumbnailSource("a.txt"));
++            Check("scaled source rejects tiff", !ImageLoader.SupportsScaledThumbnailSource("a.tif"));
++            Check("scaled source accepts png", ImageLoader.SupportsScaledThumbnailSource("a.png"));
++            Check("scaled source accepts jpeg", ImageLoader.SupportsScaledThumbnailSource("a.JPEG"));
++
++            // 준비한 이미지가 있으면 실제 축소 디코딩이 요청 크기의 3.5배 이상을 유지하는지 확인한다
++            var temp = Path.Combine(Path.GetTempPath(), "ZipPlaSelfTestScaled.png");
++            try
++            {
++                using (var bmp = new System.Drawing.Bitmap(1200, 900))
++                using (var g = System.Drawing.Graphics.FromImage(bmp))
++                {
++                    g.Clear(System.Drawing.Color.White);
++                    bmp.Save(temp, System.Drawing.Imaging.ImageFormat.Png);
++                }
++
++                ImageInfo info;
++                var scaled = ImageLoader.GetScaledThumbnailSource(temp, new System.Drawing.Size(160, 120), out info);
++                Check("scaled source returns bitmap", scaled != null);
++                if (scaled != null)
++                {
++                    using (scaled)
++                    {
++                        // 160*3.5 = 560, 120*3.5 = 420 이상이어야 잘라내기 모드에서도 화질이 유지된다
++                        Check("scaled source keeps density", scaled.Width >= 560 && scaled.Height >= 420,
++                            scaled.Width + "x" + scaled.Height);
++                        Check("scaled source keeps aspect", Math.Abs((double)scaled.Width / scaled.Height - 1200.0 / 900.0) < 0.02,
++                            scaled.Width + "x" + scaled.Height);
++                    }
++                    CheckEqual("scaled source keeps original size info", "1200x900", info.Size.Width + "x" + info.Size.Height);
++                }
++
++                // 이미 작은 이미지는 기존 경로를 쓴다(캐시 크기 조건을 만족시킬 수 없다)
++                ImageInfo smallInfo;
++                var small = ImageLoader.GetScaledThumbnailSource(temp, new System.Drawing.Size(1000, 800), out smallInfo);
++                Check("scaled source skipped when original is small", small == null);
++                if (small != null) small.Dispose();
++            }
++            catch (Exception ex)
++            {
++                Check("scaled source test", false, ex.ToString());
++            }
++            finally
++            {
++                TryDelete(temp);
++            }
++        }
++
+         private static void TestArchiveExtensionList()
+         {
+             Check("archive .zip", ContextMenuRegistrationManager.IsArchiveExtension(".zip"));
+Only in /c/Users/zagk/Desktop/buff/ZipPlaFork-v16-d2/source/ZipPla: ThumbnailBench.cs
+Only in /c/Users/zagk/Desktop/buff/ZipPlaFork-v16-d2/source/ZipPla: ThumbnailLimiter.cs
+diff -ru '--exclude=bin' '--exclude=obj' /tmp/d1orig/ZipPlaFork-v16-d1/source/ZipPla/ZipPla.csproj /c/Users/zagk/Desktop/buff/ZipPlaFork-v16-d2/source/ZipPla/ZipPla.csproj
+--- /tmp/d1orig/ZipPlaFork-v16-d1/source/ZipPla/ZipPla.csproj	2026-09-23 19:38:48.000000000 +0900
++++ /c/Users/zagk/Desktop/buff/ZipPlaFork-v16-d2/source/ZipPla/ZipPla.csproj	2026-09-23 20:30:20.362699100 +0900
+@@ -2708,6 +2708,8 @@
+       <SubType>Form</SubType>
+     </Compile>
+     <Compile Include="CatalogForm.ExternalOpen.cs" />
++    <Compile Include="ThumbnailLimiter.cs" />
++    <Compile Include="ThumbnailBench.cs" />
+     <Compile Include="CatalogForm.Designer.cs">
+       <DependentUpon>CatalogForm.cs</DependentUpon>
+     </Compile>

@@ -1134,7 +1134,7 @@ namespace ZipPla
             //mtbPage.Location = new Point(0, statusStrip.Location.Y - mtbPage.Height);
             pnlSeekbar.Location = new Point(0, statusStrip.Location.Y - pnlSeekbar.Height);
 
-            Text = Program.Name;
+            Text = Program.DisplayName;
             //currentImageLongPathToolStripStatusLabel.Text = "";
             pageToolStripStatusLabel.Text = "";
             imageSizeToolStripStatusLabel.Text = "";
@@ -3063,7 +3063,7 @@ namespace ZipPla
             {
                 if (string.IsNullOrEmpty(currentArchiveFilePath))
                 {
-                    text = Program.Name;
+                    text = Program.DisplayName;
                 }
                 else
                 {
@@ -3072,17 +3072,17 @@ namespace ZipPla
                     var archiveFileName = Path.GetFileName(currentArchiveFilePath);
                     if (Directory.Exists(currentArchiveFilePath))
                     {
-                        text = $"{archiveFileName + Path.DirectorySeparatorChar}{slideshow} - {Program.Name}";
+                        text = $"{archiveFileName + Path.DirectorySeparatorChar}{slideshow} - {Program.DisplayName}";
                     }
                     else
                     {
-                        text = $"{archiveFileName}{slideshow} - {Program.Name}";
+                        text = $"{archiveFileName}{slideshow} - {Program.DisplayName}";
                     }
                 }
             }
             catch
             {
-                text = Program.Name;
+                text = Program.DisplayName;
             }
             Text = text;
         }

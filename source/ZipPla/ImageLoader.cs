@@ -11,6 +11,7 @@ using System.Runtime.InteropServices.ComTypes;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
+using System.Windows.Media.Imaging;
 using System.Collections;
 
 namespace ZipPla
@@ -687,6 +688,122 @@ namespace ZipPla
         public static Bitmap GetFullBitmap(string filePath, bool animation = false)
         {
             return GetFullBitmap(filePath, false, out var dummy, animation);
+        }
+
+        // d2: 썸네일을 만들기 위해 원본 전체(예: 56MP)를 디코딩하는 것은 낭비다.
+        //     WIC(WPF) 디코더는 JPEG 의 DCT 스케일링과 축소 디코딩을 지원하므로
+        //     필요한 밀도만 남기고 디코딩할 수 있다(측정: 6000x4000 JPEG 86ms → 25ms).
+        //
+        //     캐시(GPSizeThumbnail)에 저장되는 항목은 요청 크기의 SIZE_MARGIN(1.414) 배이고
+        //     TrySet 은 "원본 >= 축소 목표 * 2" 를 요구한다. 아래 SourceMargin 1.0 은 그보다
+        //     충분히 크므로 디코딩 크기를 줄여도 캐시 내용과 잘라내기 품질은 그대로다.
+        private const double ThumbnailSourceMargin = 3.5;
+
+        private static readonly string[] scaledThumbnailSourceExtensionsInLowerWithoutPeriod = new string[] { "jpg", "jpeg", "png", "bmp" };
+
+        /// <summary>
+        /// 원본을 통째로 읽지 않고 썸네일용으로 축소 디코딩할 수 있는 형식인지.
+        /// (IsLowLoad 인 형식과 일치시켜, 캐시가 원본 크기를 보관하지 않는 형식만 대상으로 한다)
+        /// </summary>
+        public static bool SupportsScaledThumbnailSource(string path)
+        {
+            if (path == null) return false;
+            try
+            {
+                var extension = Path.GetExtension(path);
+                if (extension.Length < 2) return false;
+                var withoutPeriod = extension.Substring(1).ToLower();
+                if (Array.IndexOf(scaledThumbnailSourceExtensionsInLowerWithoutPeriod, withoutPeriod) < 0) return false;
+                return ImageInfo.Supports(path);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 썸네일 생성용으로 축소 디코딩한 비트맵을 만든다.
+        /// 요청 크기의 ThumbnailSourceMargin 배보다 원본이 크지 않으면 null 을 돌려주고,
+        /// 호출자가 기존의 전체 디코딩 경로로 넘어간다(작은 이미지는 이득이 없고,
+        /// 캐시가 필요로 하는 크기 조건도 만족시키기 어렵다).
+        /// </summary>
+        public static Bitmap GetScaledThumbnailSource(string filePath, Size requestedThumbnailSize, out ImageInfo imageInfo)
+        {
+            imageInfo = null;
+            if (!SupportsScaledThumbnailSource(filePath)) return null;
+            if (requestedThumbnailSize.Width < 1 || requestedThumbnailSize.Height < 1) return null;
+
+            var info = new ImageInfo(filePath);
+            var sourceWidth = info.Size.Width;
+            var sourceHeight = info.Size.Height;
+            if (sourceWidth < 1 || sourceHeight < 1) return null;
+
+            var needWidth = requestedThumbnailSize.Width * ThumbnailSourceMargin;
+            var needHeight = requestedThumbnailSize.Height * ThumbnailSourceMargin;
+
+            // 두 축 모두 요청 크기의 margin 배 이상의 밀도를 남겨야 잘라내기 모드에서도 화질이 유지된다
+            var zoom = Math.Max(needWidth / sourceWidth, needHeight / sourceHeight);
+            // m1: 작은 이미지는 기존 경로로 넘어가지만, 파싱해 둔 헤더 정보는 호출자가
+            //     재사용할 수 있게 돌려준다(폴백에서 ImageInfo 를 두 번 만들지 않도록).
+            if (zoom >= 1) { imageInfo = info; return null; }
+
+            var boundByWidth = needWidth / sourceWidth >= needHeight / sourceHeight;
+            var decodeWidth = (int)Math.Ceiling(sourceWidth * zoom);
+            var decodeHeight = (int)Math.Ceiling(sourceHeight * zoom);
+            if (decodeWidth < 1 || decodeHeight < 1) return null;
+
+            var isJpeg = IsJpegPath(filePath);
+            Bitmap result = null;
+            try
+            {
+                using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    // 방향 정보는 축소 후에 적용한다(원본 크기에서 돌리는 것보다 훨씬 싸다)
+                    var orientation = new DihedralFraction();
+                    if (isJpeg)
+                    {
+                        orientation = GetJpegOrientation(stream);
+                        stream.Position = 0;
+                    }
+
+                    var image = new BitmapImage();
+                    image.BeginInit();
+                    image.CacheOption = BitmapCacheOption.OnLoad;
+                    image.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
+                    if (boundByWidth)
+                    {
+                        image.DecodePixelWidth = decodeWidth;
+                    }
+                    else
+                    {
+                        image.DecodePixelHeight = decodeHeight;
+                    }
+                    image.StreamSource = stream;
+                    image.EndInit();
+                    image.Freeze();
+
+                    result = BitmapResizer.GetBitmap(image);
+                    if (orientation != new DihedralFraction())
+                    {
+                        var rotated = ViewerFormImageFilter.Rotate(result, orientation);
+                        if (rotated != result) result.Dispose();
+                        result = rotated;
+                    }
+                }
+            }
+            catch
+            {
+                if (result != null)
+                {
+                    result.Dispose();
+                    result = null;
+                }
+                throw;
+            }
+
+            imageInfo = info;
+            return result;
         }
 
         //private static Bitmap getThumbnailBitmap(string filePath, bool setImageInfo, Size desiredSize, Func<Delegate, object> invoke, out ImageInfo imageInfo)

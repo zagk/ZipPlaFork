@@ -170,9 +170,13 @@ namespace ZipPla
                     else if (line.EndsWith(":")) mode = -1;
                     else if (mode >= 0 && line != "") lists[mode].Add(line);
                 }
+                // d1 fix: all three lists used to be copied from lists[0], so the
+                // "NGEN Roots that depend on <target>" and "Native Images" sections were
+                // discarded and the callers (CommandLineAcceptor / LostNativeImageExists)
+                // inspected the wrong set of paths.
                 ngenRoots = lists[0].ToArray();
-                ngenRootsThatDependOnTarget = lists[0].ToArray();
-                nativeImages = lists[0].ToArray();
+                ngenRootsThatDependOnTarget = lists[1].ToArray();
+                nativeImages = lists[2].ToArray();
                 
                 p.WaitForExit();
             }

@@ -459,6 +459,45 @@ namespace ZipPla
             Thumbnails = "サムネイル";
             Details = "詳細";
             Layout = "レイアウト";
+            Metadata = "メタデータ";
+            MetadataLayout = "メタデータのレイアウト";
+            MetadataVerticalLayout = "サムネイル／メタデータ";
+            MetadataAlternativeVerticalLayout = "メタデータ／サムネイル";
+            MetadataHorizontalLayout = "サムネイル｜メタデータ";
+            MetadataAlternativeHorizontalLayout = "メタデータ｜サムネイル";
+            Metadata_ColumnName = "名前";
+            Metadata_ColumnValue = "値";
+            Metadata_CopyButton = "コピー";
+            Metadata_NoSelection = "画像を選択するとメタデータが表示されます。";
+            Metadata_NoMetadataFound = "このファイルにはメタデータが見つかりませんでした。";
+            Metadata_NotAvailable = "利用できません";
+            Metadata_Loading = "メタデータを読み込んでいます...";
+            Metadata_NotAvailableForArchiveItem = "アーカイブ内のアイテムのメタデータは利用できません。";
+            Metadata_FileTooLarge = "ファイルが大きすぎるためメタデータをスキャンできません。";
+            Metadata_ReadError = "このファイルのメタデータを読み取れませんでした。";
+            Metadata_FileName = "ファイル名";
+            Metadata_Folder = "フォルダー";
+            Metadata_FileSize = "ファイルサイズ";
+            Metadata_Modified = "更新日時";
+            Metadata_Dimensions = "サイズ（幅×高さ）";
+            Metadata_ComfyUiWorkflow = "ComfyUI ワークフロー（JSON）";
+            Metadata_CameraMake = "カメラメーカー";
+            Metadata_CameraModel = "カメラ機種";
+            Metadata_DateTaken = "撮影日時";
+            Metadata_Orientation = "向き";
+            Metadata_Software = "ソフトウェア";
+            Metadata_ExposureTime = "露出時間";
+            Metadata_FNumber = "F値";
+            Metadata_Iso = "ISO感度";
+            Metadata_FocalLength = "焦点距離";
+            Metadata_Rating = "評価";
+            Metadata_Keywords = "キーワード";
+            Metadata_Creator = "作成者";
+            Metadata_GpsLocation = "GPS位置情報";
+            OnlyOneWindow = "ウィンドウを1つだけにする（既存のウィンドウを再利用）";
+            ContextMenuRegistration = "コンテキストメニューに登録";
+            ContextMenuRegistrationFailed = "Windows のコンテキストメニュー登録を変更できませんでした。";
+            ContextMenuOpenWithZipPla = "ZipPla で開く";
             VerticalLayout = "サムネイル／詳細";
             AlternativeVerticalLayout = "詳細／サムネイル";
             HorizontalLayout = "サムネイル｜詳細";
@@ -1327,6 +1366,45 @@ namespace ZipPla
             AlternativeVerticalLayout = "Details / Thumbnails";
             HorizontalLayout = "Thumbnails | Details";
             AlternativeHorizontalLayout = "Details | Thumbnails";
+            Metadata = "Metadata";
+            MetadataLayout = "Metadata layout";
+            MetadataVerticalLayout = "Thumbnails / Metadata";
+            MetadataAlternativeVerticalLayout = "Metadata / Thumbnails";
+            MetadataHorizontalLayout = "Thumbnails | Metadata";
+            MetadataAlternativeHorizontalLayout = "Metadata | Thumbnails";
+            Metadata_ColumnName = "Name";
+            Metadata_ColumnValue = "Value";
+            Metadata_CopyButton = "Copy";
+            Metadata_NoSelection = "Select an image to view its metadata.";
+            Metadata_NoMetadataFound = "No metadata found for this file.";
+            Metadata_NotAvailable = "Not available";
+            Metadata_Loading = "Loading metadata...";
+            Metadata_NotAvailableForArchiveItem = "Metadata is not available for items inside an archive.";
+            Metadata_FileTooLarge = "File is too large to scan for metadata.";
+            Metadata_ReadError = "Could not read metadata for this file.";
+            Metadata_FileName = "File name";
+            Metadata_Folder = "Folder";
+            Metadata_FileSize = "File size";
+            Metadata_Modified = "Modified";
+            Metadata_Dimensions = "Dimensions";
+            Metadata_ComfyUiWorkflow = "ComfyUI workflow (JSON)";
+            Metadata_CameraMake = "Camera make";
+            Metadata_CameraModel = "Camera model";
+            Metadata_DateTaken = "Date taken";
+            Metadata_Orientation = "Orientation";
+            Metadata_Software = "Software";
+            Metadata_ExposureTime = "Exposure time";
+            Metadata_FNumber = "F-number";
+            Metadata_Iso = "ISO";
+            Metadata_FocalLength = "Focal length";
+            Metadata_Rating = "Rating";
+            Metadata_Keywords = "Keywords";
+            Metadata_Creator = "Creator";
+            Metadata_GpsLocation = "GPS location";
+            OnlyOneWindow = "Only one window (reuse existing window)";
+            ContextMenuRegistration = "Register context menu";
+            ContextMenuRegistrationFailed = "Could not change the Windows context menu registration.";
+            ContextMenuOpenWithZipPla = "Open with ZipPla";
             BuiltInViewerSettings = "Built-in viewer settings";
             BlackBackground = "Black background";
             GrayBackground = "Gray background";
@@ -2206,6 +2284,45 @@ namespace ZipPla
         public static string AlternativeVerticalLayout { get; private set; }
         public static string HorizontalLayout { get; private set; }
         public static string AlternativeHorizontalLayout { get; private set; }
+        public static string Metadata { get; private set; }
+        public static string MetadataLayout { get; private set; }
+        public static string MetadataVerticalLayout { get; private set; }
+        public static string MetadataAlternativeVerticalLayout { get; private set; }
+        public static string MetadataHorizontalLayout { get; private set; }
+        public static string MetadataAlternativeHorizontalLayout { get; private set; }
+        public static string Metadata_ColumnName { get; private set; }
+        public static string Metadata_ColumnValue { get; private set; }
+        public static string Metadata_CopyButton { get; private set; }
+        public static string Metadata_NoSelection { get; private set; }
+        public static string Metadata_NoMetadataFound { get; private set; }
+        public static string Metadata_NotAvailable { get; private set; }
+        public static string Metadata_Loading { get; private set; }
+        public static string Metadata_NotAvailableForArchiveItem { get; private set; }
+        public static string Metadata_FileTooLarge { get; private set; }
+        public static string Metadata_ReadError { get; private set; }
+        public static string Metadata_FileName { get; private set; }
+        public static string Metadata_Folder { get; private set; }
+        public static string Metadata_FileSize { get; private set; }
+        public static string Metadata_Modified { get; private set; }
+        public static string Metadata_Dimensions { get; private set; }
+        public static string Metadata_ComfyUiWorkflow { get; private set; }
+        public static string Metadata_CameraMake { get; private set; }
+        public static string Metadata_CameraModel { get; private set; }
+        public static string Metadata_DateTaken { get; private set; }
+        public static string Metadata_Orientation { get; private set; }
+        public static string Metadata_Software { get; private set; }
+        public static string Metadata_ExposureTime { get; private set; }
+        public static string Metadata_FNumber { get; private set; }
+        public static string Metadata_Iso { get; private set; }
+        public static string Metadata_FocalLength { get; private set; }
+        public static string Metadata_Rating { get; private set; }
+        public static string Metadata_Keywords { get; private set; }
+        public static string Metadata_Creator { get; private set; }
+        public static string Metadata_GpsLocation { get; private set; }
+        public static string OnlyOneWindow { get; private set; }
+        public static string ContextMenuRegistration { get; private set; }
+        public static string ContextMenuRegistrationFailed { get; private set; }
+        public static string ContextMenuOpenWithZipPla { get; private set; }
         public static string BuiltInViewerSettings { get; private set; }
         public static string ForceFirstPageToBeSingle { get; private set; }
         public static string OpenInPreviousFullscreenMode { get; private set; }

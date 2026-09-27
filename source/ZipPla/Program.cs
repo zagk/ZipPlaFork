@@ -31,6 +31,8 @@ namespace ZipPla
         public static Form StartForm { get { return startForm; } }
         public static IMultipleLanguages multiLangForm { get; private set; }
         public static readonly string Name = Application.ProductName;
+        public static string DisplayName { get { return Name + " " + ForkVersion.Current; } }
+        private static readonly object AlertErrorLock = new object();
         
         public static readonly float DisplayMagnificationX;
         public static readonly float DisplayMagnificationY;
@@ -181,6 +183,49 @@ namespace ZipPla
 
             var rawCommands = Environment.GetCommandLineArgs();
 
+            // d1: 옵션 처리. 이들은 단일 인스턴스로 전달하면 안 된다.
+            InitializeLogging(rawCommands);
+            if (SelfTest.IsRequested(rawCommands))
+            {
+                Environment.Exit(SelfTest.Run(rawCommands));
+                return;
+            }
+            // d2: 썸네일 속도 계측용(진단 스위치)
+            if (ThumbnailBench.IsRequested(rawCommands))
+            {
+                Environment.Exit(ThumbnailBench.Run(rawCommands));
+                return;
+            }
+
+            // Optional single-window mode: forward subsequent catalog launches to the first instance.
+            // Built-in Viewer launches (-v / -LookAheadMode*) must remain separate processes.
+            // d1: NgenManager 의 내부 명령(<NGEN_INSTALL>/<NGEN_UNINSTALL>)도 여기서 제외한다.
+            //     예전에는 단일 창 모드가 이 명령을 기존 창으로 전달했고, 기존 창은 그것을 경로로
+            //     취급해 아무 것도 하지 않았으며 설치 프로세스는 exit 0 으로 끝나 네이티브 이미지
+            //     설치/제거가 조용히 실패했다.
+            bool isViewerLaunch = false;
+            for (int i = 1; i < rawCommands.Length; i++)
+            {
+                if (string.Equals(rawCommands[i], "-v", StringComparison.OrdinalIgnoreCase) ||
+                    rawCommands[i].StartsWith("-LookAheadMode", StringComparison.OrdinalIgnoreCase) ||
+                    rawCommands[i].StartsWith("<NGEN_", StringComparison.Ordinal))
+                {
+                    isViewerLaunch = true;
+                    break;
+                }
+            }
+
+            if (!isViewerLaunch && SingleInstanceManager.Enabled)
+            {
+                if (!SingleInstanceManager.TryBecomePrimaryAndStartServer())
+                {
+                    // If forwarding succeeds, exit. If the primary is gone/busy,
+                    // fall through and start normally instead of silently exiting.
+                    if (SingleInstanceManager.SendToPrimary(rawCommands)) return;
+                    LogMessage("Could not forward the command line to the existing window; opening a new window.");
+                }
+            }
+
             if (NgenManager.CommandLineAcceptor("ZipPla", rawCommands, out var exitCode))
             {
                 Environment.Exit(exitCode);
@@ -190,7 +235,6 @@ namespace ZipPla
             Directory.SetCurrentDirectory(Application.StartupPath);
 
             string[] cmds = ShortcutResolver.Exec(rawCommands).ToArray();
-
 
 #if VEIWER
             startForm = new ViewerForm(null);
@@ -248,9 +292,8 @@ namespace ZipPla
                 {
                     // ZIP/RAR files opened from Explorer should always use the thumbnail
                     // catalog browser rather than the single-image viewer.
-                    var extension = Path.GetExtension(cmds[1]);
-                    if (string.Equals(extension, ".zip", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(extension, ".rar", StringComparison.OrdinalIgnoreCase))
+                    // d1: 목록은 ContextMenuRegistrationManager 쪽 한 곳에서 관리한다.
+                    if (ContextMenuRegistrationManager.IsArchiveExtension(Path.GetExtension(cmds[1])))
                     {
                         startForm = new CatalogForm(cmds[1], addToAddList: true);
                     }
@@ -377,6 +420,7 @@ namespace ZipPla
 
             multiLangForm = StartForm as IMultipleLanguages;
             catalogForm = StartForm as CatalogForm;
+
             try
             {
                 Application.Run(StartForm);
@@ -386,6 +430,10 @@ namespace ZipPla
             catch (Exception error)
             {
                 AlertError(error);
+            }
+            finally
+            {
+                SingleInstanceManager.Stop();
             }
 
             if(exitException != null)
@@ -567,6 +615,149 @@ namespace ZipPla
             if (!form.MaximumSize.IsEmpty) form.MaximumSize = new Size(form.MaximumSize.Width, form.Size.Height);
         }
 
+        public static void ReceiveSingleInstanceCommand(string[] rawCommands)
+        {
+            try
+            {
+                // 인수 없이 다시 실행한 경우(예: 바로 가기 재실행)에는 기존 창을 앞으로 가져온다.
+                if (rawCommands == null || rawCommands.Length == 0) return;
+
+                var cmds = ShortcutResolver.Exec(rawCommands).ToArray();
+                var path = cmds.Length > 1 ? cmds[1] : null;
+
+                // 경로가 아니라 스위치(-c 등)만 온 경우에도 창을 활성화한다.
+                if (!string.IsNullOrEmpty(path) && path[0] == '-') path = null;
+
+                var form = startForm;
+                if (form == null || form.IsDisposed)
+                {
+                    LogMessage("Received a single instance command, but there is no window to activate.");
+                    return;
+                }
+
+                form.BeginInvoke((MethodInvoker)(() =>
+                {
+                    try
+                    {
+                        if (string.IsNullOrEmpty(path))
+                        {
+                            ActivateStartForm();
+                            return;
+                        }
+
+                        if (catalogForm != null && !catalogForm.IsDisposed)
+                        {
+                            catalogForm.OpenExternalPath(path);
+                        }
+                        else
+                        {
+                            ActivateStartForm();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogException(ex, "ReceiveSingleInstanceCommand (UI)");
+                    }
+                }));
+            }
+            catch (Exception ex)
+            {
+                LogException(ex, "ReceiveSingleInstanceCommand");
+            }
+        }
+
+        private static void ActivateStartForm()
+        {
+            var form = startForm;
+            if (form == null || form.IsDisposed) return;
+            if (form.WindowState == FormWindowState.Minimized) form.WindowState = FormWindowState.Normal;
+            form.Activate();
+            form.BringToFront();
+        }
+
+        #region d1: logging
+        private const long MaxLogFileBytes = 1024 * 1024;
+        private static readonly object logLocker = new object();
+
+        /// <summary>
+        /// -log 스위치가 있거나 로그 파일이 이미 존재하면 파일 로깅을 켜다.
+        /// 로깅을 끄려면 로그 파일(%LOCALAPPDATA%\ZipPlaForkCustom\ZipPla.log)을 삭제한다.
+        /// </summary>
+        public static bool LoggingEnabled { get; private set; }
+
+        public static void InitializeLogging(string[] commandLine)
+        {
+            try
+            {
+                var requested = commandLine != null &&
+                    commandLine.Any(a => string.Equals(a, "-log", StringComparison.OrdinalIgnoreCase));
+                LoggingEnabled = requested || File.Exists(LogFilePath);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine(ex);
+            }
+        }
+
+        public static string LogFilePath
+        {
+            get
+            {
+                try
+                {
+                    return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "ZipPlaForkCustom", "ZipPla.log");
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine(ex);
+                    return null;
+                }
+            }
+        }
+
+        public static void LogMessage(string message)
+        {
+            WriteLog(null, message);
+        }
+
+        public static void LogException(Exception error, string context = null)
+        {
+            if (error == null)
+            {
+                LogMessage(context);
+                return;
+            }
+            WriteLog(error, context);
+        }
+
+        private static void WriteLog(Exception error, string context)
+        {
+            try
+            {
+                var line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + "\t" + (context ?? "") +
+                    (error == null ? "" : "\t" + error.GetType().Name + ": " + error.Message + "\r\n" + error.StackTrace);
+                Debug.WriteLine("[ZipPla] " + line);
+
+                if (!LoggingEnabled) return;
+
+                lock (logLocker)
+                {
+                    var path = LogFilePath;
+                    if (string.IsNullOrEmpty(path)) return;
+                    var directory = Path.GetDirectoryName(path);
+                    if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory)) Directory.CreateDirectory(directory);
+                    if (File.Exists(path) && new FileInfo(path).Length > MaxLogFileBytes) File.Delete(path);
+                    File.AppendAllText(path, line + Environment.NewLine, Encoding.UTF8);
+                }
+            }
+            catch (Exception logError)
+            {
+                Debug.WriteLine(logError);
+            }
+        }
+        #endregion
+
         public static void AlertError(Exception error)
         {
             if (error != null)
@@ -604,12 +795,16 @@ namespace ZipPla
                 {
                     try
                     {
-                        lock (StartForm)
+                        // d(v18): 전용 락 + BeginInvoke. lock(StartForm)+Invoke는
+                        // 배경 스레드가 락을 잡고 UI를 기다리는 동안 UI 스레드가
+                        // 같은 락을 잡으러 오면 데드락한다.
+                        lock (AlertErrorLock)
                         {
-                            StartForm.Invoke((MethodInvoker)(() =>
-                            {
+                            var form = StartForm;
+                            if (form != null && !form.IsDisposed && form.Visible)
+                                form.BeginInvoke((MethodInvoker)(() => { act(); }));
+                            else
                                 act();
-                            }));
                         }
                     }
                     catch

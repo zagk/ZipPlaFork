@@ -1,0 +1,37 @@
+ZipPlaFork v15 static code audit (based on v14 source)
+
+- C# files: 2490
+- C# files outside bundled third-party/vendor trees: 229
+
+1. Required build/runtime compatibility
+- Target framework remains .NET Framework 4.5.2; no target-framework migration was made.
+- The obsolete PreBuildEvent invoking Properties\PreprocessorForPerformance.js is absent from ZipPla.csproj.
+- System.Web.Extensions remains referenced because MetadataFeature uses JavaScriptSerializer.
+
+2. Current custom features checked
+- MetadataFeature.cs: single metadata implementation used by MetadataPanel.
+- SingleInstanceManager.cs: v4-style named mutex + named pipe implementation retained.
+- Program.cs: viewer launches (-v / -LookAheadMode*) are excluded from Single Window forwarding.
+- CatalogForm.cs: Metadata frame uses an internal resize grip instead of a sibling Splitter; this is retained because it fixed the disappearing-divider issue.
+- Metadata columns use Fill sizing and the metadata panel reflows on SizeChanged.
+
+3. Legacy / old-code findings
+- The repository contains a large amount of original/vendor legacy code. It should NOT be bulk-deleted merely because it is old.
+- Multiple NotImplementedException occurrences exist in SharpCompress and other bundled libraries; these are generally intentional unsupported operations, not evidence of dead code.
+- Obsolete attributes exist in bundled third-party code. They are not part of the new metadata/single-window feature.
+- Program.cs contains many commented-out developer/test snippets. They are cleanup candidates, but removing them is not required for runtime correctness.
+- CatalogForm.cs and Program.cs contain numerous intentionally swallowed catch blocks. These are cleanup/logging candidates, but changing them globally risks altering behavior.
+
+4. Duplicate/new-feature risk check
+- No separate ImageMetadataReader.cs file exists in the current v14 tree; MetadataFeature.cs owns ImageMetadataReader and MetadataPanel.
+- No alternate SingleInstance.cs implementation is present; SingleInstanceManager.cs is the active implementation.
+- Existing System.Runtime.Remoting references are still required by the original built-in Viewer IPC path; they must not be removed as part of Single Window cleanup.
+
+5. Recommended cleanup strategy
+- Keep vendor folders untouched.
+- Do not remove Remoting/IPC code: ViewerForm/CatalogForm still depend on it.
+- If desired later, perform a separate conservative cleanup pass only on project-owned files: unused using directives, commented-out test blocks, empty catches where safe, and duplicate helper logic.
+- Prefer small isolated changes followed by VS2022 build + Viewer/Single Window/Metadata regression tests.
+
+6. v15 functional change
+- Metadata table now shows Excel-style cell separators (horizontal + vertical) using DataGridViewCellBorderStyle.Single and ControlLight grid color.

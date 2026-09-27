@@ -21,8 +21,8 @@ namespace ZipPla
 
             Program.SetFormHeightByControlLocationAndPackToOwnerScreen(this, btnOK);
 
-            Text = "About " + Program.Name;
-            lbZipPla.Text = Program.Name;
+            Text = "About " + Program.DisplayName;
+            lbZipPla.Text = Program.DisplayName;
 
             btnOK.Text = "OK"; // デザイナのコードはプリプロセッサに消される
 
